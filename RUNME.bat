@@ -30,7 +30,7 @@ if errorlevel 1 (
 echo.
 echo  Setting up browser...
 echo.
-playwright install chromium
+python -m playwright install chromium
 if errorlevel 1 (
     echo.
     echo  Failed to install Chromium. Check your internet connection.
