@@ -1,9 +1,10 @@
 import asyncio
-import time
-import sys
+import base64
 import json
 import os
+import sys
 import threading
+import time
 import winreg
 
 import requests
@@ -44,35 +45,26 @@ import tkinter as tk
 from tkinter import messagebox
 
 
-def show_error(title: str, message: str):
+def show_error(title, message):
     root = tk.Tk()
     root.withdraw()
     messagebox.showerror(title, message)
     root.destroy()
 
 
-def show_info(title: str, message: str):
+def show_info(title, message):
     root = tk.Tk()
     root.withdraw()
     messagebox.showinfo(title, message)
     root.destroy()
 
 
-def ask_yes_no(title: str, message: str) -> bool:
+def ask_yes_no(title, message):
     root = tk.Tk()
     root.withdraw()
     result = messagebox.askyesno(title, message)
     root.destroy()
     return result
-
-
-def ask_input(title: str, prompt: str) -> str:
-    import tkinter.simpledialog as sd
-    root = tk.Tk()
-    root.withdraw()
-    result = sd.askstring(title, prompt) or ""
-    root.destroy()
-    return result.strip()
 
 
 DISCORD_CLIENT_ID = "1482466537817374760"
@@ -82,6 +74,40 @@ RECNET_BASE       = "https://rec.net"
 STARTUP_KEY       = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_NAME      = "RecRoomRPC"
 RR_PROCESS        = "RecRoom.exe"
+ROOMS_JSON_URL    = "https://raw.githubusercontent.com/PedroDevv/Rec-Room-RPC/refs/heads/main/rooms.json"
+
+RRO_STATE_MAP = {
+    "RecCenter":            "Hanging out at the Rec Center",
+    "RecCenter.Reimagined": "Hanging out at the Rec Center",
+    "Lounge":               "Vibing in the Lounge",
+    "Park":                 "Touching grass at the Park",
+    "Orientation":          "Finding their footing",
+    "Paintball":            "Splatting people in Paintball",
+    "PaintballVR":          "Splatting people in Paintball",
+    "Dodgeball":            "Getting pelted in Dodgeball",
+    "DodgeballVR":          "Getting pelted in Dodgeball",
+    "Soccer":               "Scoring goals in Soccer",
+    "Paddleball":           "Rallying in Paddleball",
+    "Bowling":              "Bowling a strike (hopefully)",
+    "DiscGolfLake":         "Missing the basket in Disc Golf",
+    "DiscGolfPropulsion":   "Missing the basket in Disc Golf",
+    "RecRally":             "Eating dirt in Rec Rally",
+    "StuntRunner":          "Parkour-ing in Stunt Runner",
+    "RunTheBlock":          "Running the Block",
+    "LaserTag":             "Zapping robots in Laser Tag",
+    "RecRoyaleSolos":       "Last one standing in Rec Royale",
+    "RecRoyaleSquads":      "Dropping in with the squad",
+    "Showdown":             "It's high noon in Showdown",
+    "MakeItToMidnight":     "Surviving the night",
+    "GoldenTrophy":         "Chasing the Golden Trophy",
+    "TheRiseofJumbotron":   "Taking down Jumbotron",
+    "IsleOfLostSkulls":     "Lost on the Isle of Lost Skulls",
+    "Crescendo":            "Hunting vampires in Crescendo",
+    "CrimsonCauldron":      "Lifting the Crimson Cauldron curse",
+    "3DCharades":           "Absolutely terrible at Charades",
+    "Legacy3DCharades":     "Absolutely terrible at Charades",
+    "MyLittleMonsters":     "Taking care of their Little Monsters",
+}
 
 DEVICE_CLASS_MAP = {
     0: ("rec_room_logo", "Rec Room"),
@@ -95,17 +121,17 @@ DEVICE_CLASS_MAP = {
     8: ("ps5",           "PlayStation 5"),
 }
 
-_access_token = ""
-_cookies      = {}
-_tray_icon    = None
-_stop_event   = threading.Event()
+_access_token    = ""
+_cookies         = {}
+_remote_room_map = {}
+_stop_event      = threading.Event()
 
 
-def _build_cookie_header(cookies: dict) -> str:
+def _build_cookie_header(cookies):
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
-def get_match_headers() -> dict:
+def get_match_headers():
     h = {
         "Authorization": f"Bearer {_access_token}",
         "User-Agent": (
@@ -121,55 +147,40 @@ def get_match_headers() -> dict:
     return h
 
 
-def _browser_login() -> tuple[str, dict]:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=["--window-size=520,720"])
-        context = browser.new_context(viewport={"width": 520, "height": 720})
-        page    = context.new_page()
-        page.goto(RECNET_BASE, wait_until="domcontentloaded")
-
-        token       = None
-        cookie_dict = {}
-
-        while True:
-            time.sleep(1)
-            try:
-                raw = page.evaluate("() => localStorage.getItem('na_current_user_session')")
-            except Exception:
-                continue
-            if not raw:
-                continue
-            try:
-                data  = json.loads(raw)
-                token = data.get("accessToken", "")
-            except Exception:
-                continue
-            if not token:
-                continue
-
-            for c in context.cookies():
-                cookie_dict[c["name"]] = c["value"]
-
-            try:
-                page.evaluate(
-                    "() => { document.body.innerHTML = "
-                    "'<div style=\"font-family:sans-serif;display:flex;"
-                    "align-items:center;justify-content:center;height:100vh;"
-                    "font-size:20px;color:#333;text-align:center;padding:24px\">"
-                    "Logged in!<br><br>You can close this window.</div>'; }"
-                )
-            except Exception:
-                pass
-
-            time.sleep(1.5)
-            browser.close()
-            return token, cookie_dict
-
-        browser.close()
-        raise ValueError("Login window closed before login completed.")
+def fetch_remote_rooms():
+    global _remote_room_map
+    try:
+        r = requests.get(ROOMS_JSON_URL, timeout=8)
+        if r.ok:
+            data = r.json()
+            if isinstance(data, dict):
+                _remote_room_map = data
+                print(f"  Loaded {len(data)} room entries from GitHub")
+    except Exception:
+        pass
 
 
-def load_config() -> dict:
+def get_rro_state(rname):
+    return _remote_room_map.get(rname) or RRO_STATE_MAP.get(rname)
+
+
+def get_device_asset(device_class):
+    return DEVICE_CLASS_MAP.get(device_class, ("rec_room_logo", "Rec Room"))
+
+
+def room_image_url(image_name):
+    if not image_name:
+        return None
+    return f"https://img.rec.net/{image_name}?width=360"
+
+
+def profile_image_url(image_name):
+    if not image_name:
+        return None
+    return f"https://img.rec.net/{image_name}?width=192&cropSquare=true"
+
+
+def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
@@ -179,12 +190,12 @@ def load_config() -> dict:
     return {}
 
 
-def save_config(data: dict):
+def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 
-def is_startup_enabled() -> bool:
+def is_startup_enabled():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_READ)
         winreg.QueryValueEx(key, STARTUP_NAME)
@@ -194,23 +205,21 @@ def is_startup_enabled() -> bool:
         return False
 
 
-def set_startup(enabled: bool):
+def set_startup(enabled):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE)
     if enabled:
         exe = sys.executable
         script = os.path.abspath(__file__)
         winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, f'"{exe}" "{script}"')
-        print(f"  Startup enabled.")
     else:
         try:
             winreg.DeleteValue(key, STARTUP_NAME)
-            print(f"  Startup disabled.")
         except FileNotFoundError:
             pass
     winreg.CloseKey(key)
 
 
-def is_rec_room_running() -> bool:
+def is_rec_room_running():
     for proc in psutil.process_iter(["name"]):
         try:
             if proc.info["name"] == RR_PROCESS:
@@ -220,10 +229,20 @@ def is_rec_room_running() -> bool:
     return False
 
 
-def get_account(username: str) -> dict | None:
+def get_account_id_from_token(token):
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (4 - len(payload) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        return str(decoded.get("sub", ""))
+    except Exception:
+        return None
+
+
+def get_account_by_id(account_id):
     try:
         r = cffi_get(
-            f"https://accounts.rec.net/account?username={username}",
+            f"https://accounts.rec.net/account/{account_id}",
             headers=get_match_headers(),
             impersonate="chrome120",
             timeout=8,
@@ -237,7 +256,7 @@ def get_account(username: str) -> dict | None:
     return None
 
 
-def get_room(instance_name: str, room_id: int) -> dict | None:
+def get_room(instance_name, room_id):
     if not instance_name or not instance_name.startswith("^"):
         return None
     try:
@@ -254,7 +273,7 @@ def get_room(instance_name: str, room_id: int) -> dict | None:
     return None
 
 
-def get_location(account_id: int) -> dict | None:
+def get_location(account_id):
     try:
         r = cffi_get(
             f"https://match.rec.net/player?id={account_id}",
@@ -272,25 +291,50 @@ def get_location(account_id: int) -> dict | None:
     return None
 
 
-def room_image_url(image_name: str | None) -> str | None:
-    if not image_name:
-        return None
-    return f"https://img.rec.net/{image_name}?width=360"
+def _browser_login():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, args=["--window-size=520,720"])
+        context = browser.new_context(viewport={"width": 520, "height": 720})
+        page    = context.new_page()
+        page.goto(RECNET_BASE, wait_until="domcontentloaded")
+
+        while True:
+            time.sleep(1)
+            try:
+                raw = page.evaluate("() => localStorage.getItem('na_current_user_session')")
+            except Exception:
+                continue
+            if not raw:
+                continue
+            try:
+                data  = json.loads(raw)
+                token = data.get("accessToken", "")
+            except Exception:
+                continue
+            if not token:
+                continue
+
+            cookie_dict = {c["name"]: c["value"] for c in context.cookies()}
+
+            try:
+                page.evaluate(
+                    "() => { document.body.innerHTML = "
+                    "'<div style=\"font-family:sans-serif;display:flex;"
+                    "align-items:center;justify-content:center;height:100vh;"
+                    "font-size:20px;color:#333;text-align:center;padding:24px\">"
+                    "Logged in!<br><br>You can close this window.</div>'; }"
+                )
+            except Exception:
+                pass
+
+            time.sleep(1.5)
+            browser.close()
+            return token, cookie_dict
 
 
-def profile_image_url(image_name: str | None) -> str | None:
-    if not image_name:
-        return None
-    return f"https://img.rec.net/{image_name}?width=192&cropSquare=true"
-
-
-def get_device_asset(device_class: int) -> tuple[str, str]:
-    return DEVICE_CLASS_MAP.get(device_class, ("rec_room_logo", "Rec Room"))
-
-
-def do_login() -> tuple[str, str, dict]:
+def do_login():
     show_info(
-        "Rec Room RPC: Login",
+        "Rec Room RPC — Login",
         "A browser window will open for you to log in to Rec Room.\n\n"
         "Your login goes directly from your PC to rec.net.\n"
         "Your password is never stored or sent anywhere.\n"
@@ -300,16 +344,26 @@ def do_login() -> tuple[str, str, dict]:
 
     token, cookies = _browser_login()
 
-    username = ask_input("Rec Room RPC", "Enter your Rec Room username (without @):")
-    if not username:
-        show_error("Rec Room RPC", "No username entered. Exiting.")
+    account_id = get_account_id_from_token(token)
+    if not account_id:
+        show_error("Rec Room RPC", "Could not read account from login token. Please try again.")
         sys.exit(1)
 
-    save_config({"username": username, "cookies": cookies})
+    global _access_token, _cookies
+    _access_token = token
+    _cookies      = cookies
+
+    acct = get_account_by_id(account_id)
+    if not acct:
+        show_error("Rec Room RPC", "Could not fetch account details. Check your connection and try again.")
+        sys.exit(1)
+
+    username = acct.get("username") or acct.get("Username") or account_id
+    save_config({"username": username, "account_id": account_id, "cookies": cookies})
     return username, token, cookies
 
 
-def make_tray_icon_image() -> Image.Image:
+def make_tray_icon_image():
     img  = Image.new("RGB", (64, 64), color=(255, 94, 20))
     draw = ImageDraw.Draw(img)
     draw.ellipse([8, 8, 56, 56], fill=(255, 255, 255))
@@ -317,12 +371,9 @@ def make_tray_icon_image() -> Image.Image:
     return img
 
 
-def start_tray(username: str):
-    global _tray_icon
-
+def start_tray(username):
     def on_toggle_startup(icon, item):
-        enabled = not is_startup_enabled()
-        set_startup(enabled)
+        set_startup(not is_startup_enabled())
         icon.update_menu()
 
     def on_logout(icon, item):
@@ -349,22 +400,15 @@ def start_tray(username: str):
         pystray.MenuItem("Quit", on_quit),
     )
 
-    _tray_icon = pystray.Icon(
-        "RecRoomRPC",
-        make_tray_icon_image(),
-        "Rec Room RPC",
-        menu,
-    )
-    _tray_icon.run()
+    icon = pystray.Icon("RecRoomRPC", make_tray_icon_image(), "Rec Room RPC", menu)
+    icon.run()
 
 
-async def connect_rpc() -> Presence | None:
+async def connect_rpc():
     rpc = Presence(DISCORD_CLIENT_ID)
     try:
         await rpc.connect()
         return rpc
-    except (pye.InvalidPipe, FileNotFoundError):
-        return None
     except Exception:
         return None
 
@@ -401,15 +445,13 @@ async def set_in_room(rpc, *, room_display, room_tag, state_str,
     await rpc.update(**kwargs)
 
 
-async def presence_loop(username: str):
-    global _access_token
-
-    acct = get_account(username)
+async def presence_loop(username, account_id):
+    acct = get_account_by_id(account_id)
     if not acct:
         print("  Could not find account.")
         return
 
-    account_id    = acct["accountId"]
+    numeric_id    = acct["accountId"]
     display_name  = acct.get("displayName") or username
     profile_image = profile_image_url(acct.get("profileImage") or acct.get("ProfileImage"))
 
@@ -428,7 +470,7 @@ async def presence_loop(username: str):
         while not _stop_event.is_set() and is_rec_room_running():
             tick = time.monotonic()
 
-            location     = get_location(account_id)
+            location     = get_location(numeric_id)
             is_online    = (location or {}).get("isOnline", False) if location else False
             device_class = (location or {}).get("deviceClass", 0)
             p_asset, p_label = get_device_asset(device_class)
@@ -464,28 +506,35 @@ async def presence_loop(username: str):
                     rec_net_url     = None
                     is_private_room = True
                 elif cached_room:
-                    room_display    = cached_room.get("DisplayName") or cached_room.get("displayName") or rname
-                    img_url         = room_image_url(cached_room.get("ImageName") or cached_room.get("imageName"))
+                    room_display    = cached_room.get("Name") or rname
+                    img_url         = room_image_url(cached_room.get("ImageName"))
                     rec_net_url     = f"https://rec.net/room/{rname}" if rname else None
                     room_tag        = f"^{rname}" if rname else f"Room #{room_id}"
                     is_private_room = False
                 else:
-                    room_display    = "[PRIVATE ROOM]"
-                    room_tag        = "[PRIVATE ROOM]"
+                    room_display    = "[Private Room]"
+                    room_tag        = "[Private Room]"
                     img_url         = None
                     rec_net_url     = None
                     is_private_room = True
+
+                is_instance_private = room_inst.get("isPrivate", False)
+                rro_state = get_rro_state(rname)
 
                 if is_dorm:
                     state_str = "In Their Dorm"
                 elif is_private_room:
                     state_str = "Private Room"
+                elif rro_state:
+                    state_str = rro_state
                 elif is_in_progress:
-                    state_str = "In a match"
+                    state_str = "In a Match"
                 elif is_full:
                     state_str = "Room Full"
+                elif is_instance_private:
+                    state_str = "Private Instance"
                 else:
-                    state_str = "Public Room"
+                    state_str = "Public Instance"
 
                 await set_in_room(
                     rpc,
@@ -512,16 +561,16 @@ async def presence_loop(username: str):
         print(f"  [{time.strftime('%H:%M:%S')}] Rec Room closed — RPC cleared")
 
 
-def watch_loop(username: str):
-    print(f"  Waiting for Rec Room to launch...")
-    print(f"  (Right-click the tray icon to manage settings)")
+def watch_loop(username, account_id):
+    print("  Waiting for Rec Room to launch...")
+    print("  (Right-click the tray icon to manage settings)")
     print()
 
     while not _stop_event.is_set():
         if is_rec_room_running():
-            asyncio.run(presence_loop(username))
+            asyncio.run(presence_loop(username, account_id))
             if not _stop_event.is_set():
-                print(f"  Waiting for Rec Room to launch...")
+                print("  Waiting for Rec Room to launch...")
         time.sleep(5)
 
 
@@ -531,12 +580,13 @@ if __name__ == "__main__":
     print("-" * 50)
 
     config        = load_config()
-    username      = config.get("username", "").strip()
     saved_cookies = config.get("cookies", {})
+    saved_username  = config.get("username", "")
+    saved_account_id = config.get("account_id", "")
 
-    if not username or not saved_cookies:
+    if not saved_cookies:
         username, _access_token, _cookies = do_login()
-
+        account_id = get_account_id_from_token(_access_token)
         if ask_yes_no("Rec Room RPC", "Run automatically at Windows startup?"):
             set_startup(True)
     else:
@@ -554,17 +604,22 @@ if __name__ == "__main__":
                 timeout=10,
             )
             token = r.json().get("accessToken", "") if r.ok else ""
-            if token:
-                _access_token = token
-                print(f"  Session restored for @{username}\n")
-            else:
+            if not token:
                 raise ValueError("no token")
+            _access_token = token
+            account_id    = get_account_id_from_token(token) or saved_account_id
+            username      = saved_username
+            print(f"  Session restored for @{username}\n")
         except Exception:
             show_info("Rec Room RPC", "Your session has expired. Please log in again.")
-            os.remove(CONFIG_FILE)
+            if os.path.exists(CONFIG_FILE):
+                os.remove(CONFIG_FILE)
             username, _access_token, _cookies = do_login()
+            account_id = get_account_id_from_token(_access_token) or ""
 
-    watcher = threading.Thread(target=watch_loop, args=(username,), daemon=True)
+    fetch_remote_rooms()
+
+    watcher = threading.Thread(target=watch_loop, args=(username, account_id), daemon=True)
     watcher.start()
 
     show_info(
