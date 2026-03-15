@@ -8,7 +8,6 @@ Shows what you're doing in Rec Room as a Discord Rich Presence status. Room imag
 - Whether the game is in progress, the server is full, or you're just playing some fun rooms!
 - Your profile picture as the small icon
 - Dorm rooms and private rooms are handled without exposing anything
-- Your platform (Quest, PC, Switch etc)
 - A timer for how long you've been in the current room
 - Buttons to view the room or your profile on rec.net
 
