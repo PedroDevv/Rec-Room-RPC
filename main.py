@@ -470,8 +470,8 @@ async def presence_loop(username: str):
                     room_tag        = f"^{rname}" if rname else f"Room #{room_id}"
                     is_private_room = False
                 else:
-                    room_display    = "[Private Room]"
-                    room_tag        = "[Private Room]"
+                    room_display    = "[PRIVATE ROOM]"
+                    room_tag        = "[PRIVATE ROOM]"
                     img_url         = None
                     rec_net_url     = None
                     is_private_room = True
@@ -483,7 +483,7 @@ async def presence_loop(username: str):
                 elif is_in_progress:
                     state_str = "In a match"
                 elif is_full:
-                    state_str = "Server Full"
+                    state_str = "Room Full"
                 else:
                     state_str = "Public Room"
 
